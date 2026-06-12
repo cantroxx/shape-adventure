@@ -3,6 +3,8 @@ import { useState, useCallback, useMemo, useEffect, useRef } from "react";
 // ─── Grid & Cell ───
 const GRID = 7;
 const CELL = 50;
+const SANDBOX_GRID = 10;
+const SANDBOX_CELL = 36;
 
 // ─── Transform helpers ───
 function bbox(cells) {
@@ -40,6 +42,47 @@ function cellsMatch(a, b) {
 }
 function cellSet(cells) {
   return new Set(cells.map(c => c.join(",")));
+}
+
+// ─── Polygon helpers ───
+function rasterLine(r0, c0, r1, c1) {
+  const cells = [];
+  const dr = Math.abs(r1 - r0), dc = Math.abs(c1 - c0);
+  const steps = Math.max(dr, dc);
+  for (let i = 0; i <= steps; i++) {
+    const t = steps === 0 ? 0 : i / steps;
+    cells.push([Math.round(r0 + t * (r1 - r0)), Math.round(c0 + t * (c1 - c0))]);
+  }
+  return cells;
+}
+function pointInPoly(pr, pc, verts) {
+  let inside = false;
+  for (let i = 0, j = verts.length - 1; i < verts.length; j = i++) {
+    const ri = verts[i][0] + 0.5, ci = verts[i][1] + 0.5;
+    const rj = verts[j][0] + 0.5, cj = verts[j][1] + 0.5;
+    const tr = pr + 0.5, tc = pc + 0.5;
+    if ((ri > tr) !== (rj > tr) && tc < (cj - ci) * (tr - ri) / (rj - ri) + ci) {
+      inside = !inside;
+    }
+  }
+  return inside;
+}
+function fillPolygon(verts, gridSize) {
+  const edgeCells = new Set();
+  for (let i = 0; i < verts.length; i++) {
+    const j = (i + 1) % verts.length;
+    rasterLine(verts[i][0], verts[i][1], verts[j][0], verts[j][1])
+      .forEach(([r, c]) => edgeCells.add(`${r},${c}`));
+  }
+  const filled = new Set(edgeCells);
+  for (let r = 0; r < gridSize; r++) {
+    for (let c = 0; c < gridSize; c++) {
+      if (!filled.has(`${r},${c}`) && pointInPoly(r, c, verts)) {
+        filled.add(`${r},${c}`);
+      }
+    }
+  }
+  return [...filled].map(k => k.split(",").map(Number));
 }
 
 // ─── Stage Data ───
@@ -231,46 +274,80 @@ function StarDisplay({ count, size = 24 }) {
   );
 }
 
-function GridView({ playerCells, targetCells = [], blocked = [], matched, onCellClick, clickable }) {
-  const gridPx = CELL * GRID;
+function GridView({ playerCells, targetCells = [], blocked = [], matched, onCellClick, onCellDrag, clickable, gridSize = GRID, cellSize = CELL, polygons = [], ghostPolygons = [], currentVertices = [] }) {
+  const gridPx = cellSize * gridSize;
   const pSet = cellSet(playerCells);
   const tSet = cellSet(targetCells);
-  const bSet = cellSet(blocked);
+  const drawRef = useRef({ active: false, mode: null });
+  const gridRef = useRef(null);
+
+  const getCellFromPos = useCallback((clientX, clientY) => {
+    if (!gridRef.current) return null;
+    const rect = gridRef.current.getBoundingClientRect();
+    const x = clientX - rect.left, y = clientY - rect.top;
+    const c = Math.floor(x / cellSize), r = Math.floor(y / cellSize);
+    if (r < 0 || r >= gridSize || c < 0 || c >= gridSize) return null;
+    return [r, c];
+  }, [cellSize, gridSize]);
+
+  const handlePointerDown = useCallback((e) => {
+    if (!clickable) return;
+    e.preventDefault();
+    const pos = getCellFromPos(e.clientX, e.clientY);
+    if (!pos) return;
+    const [r, c] = pos;
+    const exists = playerCells.find(([cr, cc]) => cr === r && cc === c);
+    drawRef.current = { active: true, mode: exists ? "erase" : "draw", visited: new Set([`${r},${c}`]) };
+    onCellClick?.(r, c);
+  }, [clickable, playerCells, onCellClick, getCellFromPos]);
+
+  const handlePointerMove = useCallback((e) => {
+    if (!clickable || !drawRef.current.active) return;
+    e.preventDefault();
+    const pos = getCellFromPos(e.clientX, e.clientY);
+    if (!pos) return;
+    const [r, c] = pos;
+    const key = `${r},${c}`;
+    if (drawRef.current.visited.has(key)) return;
+    drawRef.current.visited.add(key);
+    const exists = playerCells.find(([cr, cc]) => cr === r && cc === c);
+    if (drawRef.current.mode === "draw" && !exists) onCellDrag?.(r, c, "add");
+    else if (drawRef.current.mode === "erase" && exists) onCellDrag?.(r, c, "remove");
+  }, [clickable, playerCells, onCellDrag, getCellFromPos]);
+
+  const handlePointerUp = useCallback(() => {
+    drawRef.current = { active: false, mode: null };
+  }, []);
+
+  useEffect(() => {
+    window.addEventListener("pointerup", handlePointerUp);
+    return () => window.removeEventListener("pointerup", handlePointerUp);
+  }, [handlePointerUp]);
 
   return (
-    <div style={{
+    <div ref={gridRef} style={{
       position: "relative", width: gridPx + 2, height: gridPx + 2,
       margin: "0 auto", borderRadius: 16, overflow: "hidden",
       background: C.grid, border: `2px solid ${C.gridLine}`,
       boxShadow: "0 8px 32px rgba(0,0,0,0.08), inset 0 2px 4px rgba(255,255,255,0.6)",
-    }}>
+      touchAction: "none",
+    }}
+      onPointerDown={handlePointerDown}
+      onPointerMove={handlePointerMove}
+    >
       {/* Grid lines */}
-      {Array.from({ length: GRID - 1 }).map((_, i) => (
-        <div key={`h${i}`} style={{ position: "absolute", left: 0, right: 0, top: (i + 1) * CELL, height: 1, background: C.gridLine }} />
+      {Array.from({ length: gridSize - 1 }).map((_, i) => (
+        <div key={`h${i}`} style={{ position: "absolute", left: 0, right: 0, top: (i + 1) * cellSize, height: 1, background: C.gridLine }} />
       ))}
-      {Array.from({ length: GRID - 1 }).map((_, i) => (
-        <div key={`v${i}`} style={{ position: "absolute", top: 0, bottom: 0, left: (i + 1) * CELL, width: 1, background: C.gridLine }} />
+      {Array.from({ length: gridSize - 1 }).map((_, i) => (
+        <div key={`v${i}`} style={{ position: "absolute", top: 0, bottom: 0, left: (i + 1) * cellSize, width: 1, background: C.gridLine }} />
       ))}
-
-      {/* Clickable cells for sandbox */}
-      {clickable && Array.from({ length: GRID * GRID }).map((_, idx) => {
-        const r = Math.floor(idx / GRID), c = idx % GRID;
-        return (
-          <div key={`click-${r}-${c}`}
-            onClick={() => onCellClick?.(r, c)}
-            style={{
-              position: "absolute", left: c * CELL, top: r * CELL,
-              width: CELL, height: CELL, cursor: "pointer", zIndex: 5,
-            }}
-          />
-        );
-      })}
 
       {/* Blocked cells */}
       {blocked.map(([r, c]) => (
         <div key={`b-${r},${c}`} style={{
-          position: "absolute", left: c * CELL + 2, top: r * CELL + 2,
-          width: CELL - 4, height: CELL - 4, borderRadius: 8,
+          position: "absolute", left: c * cellSize + 2, top: r * cellSize + 2,
+          width: cellSize - 4, height: cellSize - 4, borderRadius: 8,
           background: `repeating-linear-gradient(45deg, ${C.blocked}, ${C.blocked} 4px, ${C.blockedLight} 4px, ${C.blockedLight} 8px)`,
           opacity: 0.6,
         }} />
@@ -282,8 +359,8 @@ function GridView({ playerCells, targetCells = [], blocked = [], matched, onCell
         const isMatched = pSet.has(key);
         return (
           <div key={`t-${key}`} style={{
-            position: "absolute", left: c * CELL + 3, top: r * CELL + 3,
-            width: CELL - 6, height: CELL - 6, borderRadius: 8,
+            position: "absolute", left: c * cellSize + 3, top: r * cellSize + 3,
+            width: cellSize - 6, height: cellSize - 6, borderRadius: 8,
             background: isMatched ? "transparent" : C.targetAlpha,
             border: isMatched ? "none" : `2px dashed ${C.targetStroke}`,
             transition: "all 0.3s ease",
@@ -298,8 +375,8 @@ function GridView({ playerCells, targetCells = [], blocked = [], matched, onCell
         return (
           <div key={`p-${key}`} style={{
             position: "absolute",
-            left: c * CELL + 2, top: r * CELL + 2,
-            width: CELL - 4, height: CELL - 4, borderRadius: 10,
+            left: c * cellSize + 2, top: r * cellSize + 2,
+            width: cellSize - 4, height: cellSize - 4, borderRadius: cellSize > 40 ? 10 : 6,
             background: matched
               ? `linear-gradient(135deg, ${C.match}, #58D68D)`
               : isOnTarget
@@ -313,6 +390,48 @@ function GridView({ playerCells, targetCells = [], blocked = [], matched, onCell
           }} />
         );
       })}
+
+      {/* SVG polygon overlay */}
+      {(polygons.length > 0 || ghostPolygons.length > 0 || currentVertices.length > 0) && (
+        <svg style={{ position: "absolute", top: 0, left: 0, width: cellSize * gridSize, height: cellSize * gridSize, pointerEvents: "none", zIndex: 8 }}>
+          {/* Ghost polygons (original position) */}
+          {ghostPolygons.map((poly, pi) => (
+            <polygon key={`gp-${pi}`}
+              points={poly.map(([r,c]) => `${c * cellSize + cellSize/2},${r * cellSize + cellSize/2}`).join(" ")}
+              fill="none" stroke={C.targetStroke} strokeWidth="2.5" strokeDasharray="6,4" strokeLinejoin="round"
+            />
+          ))}
+          {/* Completed polygons */}
+          {polygons.map((poly, pi) => (
+            <polygon key={`cp-${pi}`}
+              points={poly.map(([r,c]) => `${c * cellSize + cellSize/2},${r * cellSize + cellSize/2}`).join(" ")}
+              fill="none" stroke={C.player} strokeWidth="3" strokeLinejoin="round" strokeLinecap="round"
+            />
+          ))}
+          {polygons.map((poly, pi) => poly.map(([r,c], vi) => (
+            <circle key={`cv-${pi}-${vi}`}
+              cx={c * cellSize + cellSize/2} cy={r * cellSize + cellSize/2}
+              r="5" fill={C.player} stroke="#FFF" strokeWidth="2"
+            />
+          )))}
+          {/* In-progress polygon preview */}
+          {currentVertices.length >= 2 && (
+            <polyline
+              points={currentVertices.map(([r,c]) => `${c * cellSize + cellSize/2},${r * cellSize + cellSize/2}`).join(" ")}
+              fill="none" stroke={C.player} strokeWidth="2.5" strokeDasharray="6,4" strokeLinejoin="round"
+            />
+          )}
+          {currentVertices.map(([r,c], i) => (
+            <g key={`pv-${i}`}>
+              <circle cx={c * cellSize + cellSize/2} cy={r * cellSize + cellSize/2}
+                r="7" fill={i === 0 ? "#3B82F6" : "#F59E0B"} stroke="#FFF" strokeWidth="2" />
+              <text x={c * cellSize + cellSize/2} y={r * cellSize + cellSize/2 + 1}
+                textAnchor="middle" dominantBaseline="middle"
+                fill="#FFF" fontSize="8" fontWeight="900">{i + 1}</text>
+            </g>
+          ))}
+        </svg>
+      )}
     </div>
   );
 }
@@ -696,122 +815,191 @@ function ResultScreen({ stage, ch, stageIdx, moves, stars, opLog, onRetry, onRep
 }
 
 // ─── Sandbox Mode ───
+// ─── Sandbox Mode ───
 function SandboxScreen({ onBack }) {
   const [cells, setCells] = useState([]);
+  const [polygons, setPolygons] = useState([]);
   const [ghostCells, setGhostCells] = useState([]);
+  const [ghostPolygons, setGhostPolygons] = useState([]);
   const [opLog, setOpLog] = useState([]);
   const [history, setHistory] = useState([]);
-  const [mode, setMode] = useState("draw"); // draw | operate
+  const [mode, setMode] = useState("draw");
+  const [drawTool, setDrawTool] = useState("free");
+  const [vertices, setVertices] = useState([]);
   const [compareA, setCompareA] = useState(null);
   const [compareB, setCompareB] = useState(null);
 
-  const toggleCell = (r, c) => {
+  const hasContent = cells.length > 0 || polygons.length > 0;
+
+  const handleCellClick = (r, c) => {
     if (mode !== "draw") return;
-    const key = `${r},${c}`;
+    if (drawTool === "polygon") {
+      if (vertices.length >= 3 && vertices[0][0] === r && vertices[0][1] === c) {
+        completePolygon(); return;
+      }
+      setVertices(v => [...v, [r, c]]); return;
+    }
     const exists = cells.find(([cr, cc]) => cr === r && cc === c);
     if (exists) setCells(cells.filter(([cr, cc]) => !(cr === r && cc === c)));
     else setCells([...cells, [r, c]]);
   };
 
+  const handleCellDrag = (r, c, action) => {
+    if (mode !== "draw" || drawTool !== "free") return;
+    if (action === "add") setCells(prev => [...prev, [r, c]]);
+    else if (action === "remove") setCells(prev => prev.filter(([cr, cc]) => !(cr === r && cc === c)));
+  };
+
+  const completePolygon = () => {
+    if (vertices.length < 3) return;
+    setPolygons(prev => [...prev, vertices.map(v => [...v])]);
+    setVertices([]);
+  };
+
   const startOperate = () => {
-    if (cells.length === 0) return;
+    if (!hasContent) return;
     setMode("operate");
     setGhostCells(cells.map(c => [...c]));
-    setOpLog([]);
-    setHistory([]);
+    setGhostPolygons(polygons.map(p => p.map(v => [...v])));
+    setOpLog([]); setHistory([]);
   };
 
   const backToDraw = () => {
-    setMode("draw");
-    setGhostCells([]);
-    setOpLog([]);
-    setHistory([]);
+    setMode("draw"); setGhostCells([]); setGhostPolygons([]); setOpLog([]); setHistory([]);
   };
 
   const applyOp = (opFn, opName) => {
-    const newCells = opFn(cells);
-    if (!newCells.every(([r, c]) => r >= 0 && r < GRID && c >= 0 && c < GRID)) return;
-    setHistory(h => [...h, { cells: cells.map(c => [...c]), opLog: [...opLog] }]);
-    setCells(newCells);
-    setOpLog(l => [...l, opName]);
+    const newCells = cells.length > 0 ? opFn(cells) : [];
+    const newPolygons = polygons.map(p => opFn(p));
+    const allPts = [...newCells, ...newPolygons.flat()];
+    if (!allPts.every(([r, c]) => r >= 0 && r < SANDBOX_GRID && c >= 0 && c < SANDBOX_GRID)) return;
+    setHistory(h => [...h, {
+      cells: cells.map(c => [...c]),
+      polygons: polygons.map(p => p.map(v => [...v])),
+      opLog: [...opLog],
+    }]);
+    setCells(newCells); setPolygons(newPolygons); setOpLog(l => [...l, opName]);
   };
 
   const undo = () => {
     if (history.length === 0) return;
     const last = history[history.length - 1];
-    setCells(last.cells); setOpLog(last.opLog);
+    setCells(last.cells); setPolygons(last.polygons); setOpLog(last.opLog);
     setHistory(h => h.slice(0, -1));
   };
 
   const clearAll = () => {
-    setCells([]); setGhostCells([]); setOpLog([]); setHistory([]);
-    setMode("draw"); setCompareA(null); setCompareB(null);
+    setCells([]); setPolygons([]); setGhostCells([]); setGhostPolygons([]);
+    setOpLog([]); setHistory([]); setMode("draw"); setVertices([]);
+    setCompareA(null); setCompareB(null);
   };
 
   const saveSlot = (slot) => {
-    const data = { cells: cells.map(c => [...c]), opLog: [...opLog] };
-    if (slot === "A") setCompareA(data);
-    else setCompareB(data);
+    const data = {
+      cells: cells.map(c => [...c]),
+      polygons: polygons.map(p => p.map(v => [...v])),
+      opLog: [...opLog],
+    };
+    if (slot === "A") setCompareA(data); else setCompareB(data);
   };
+
+  const slotsMatch = compareA && compareB &&
+    cellKey(compareA.cells) === cellKey(compareB.cells) &&
+    JSON.stringify(compareA.polygons) === JSON.stringify(compareB.polygons);
+
+  const drawDesc = drawTool === "free"
+    ? "드래그해서 자유롭게 그려요!"
+    : vertices.length === 0
+      ? "꼭짓점을 찍어 다각형을 그려요!"
+      : `꼭짓점 ${vertices.length}개 — ${vertices.length >= 3 ? "첫 점 클릭 또는 완성 버튼!" : "계속 찍어주세요"}`;
 
   return (
     <div style={{ maxWidth: 480, margin: "0 auto", padding: "16px" }}>
-      {/* Header */}
-      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 16 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
         <button onClick={onBack} style={{ background: "none", border: "none", fontSize: 22, cursor: "pointer" }}>←</button>
         <div>
           <h2 style={{ fontSize: 20, fontWeight: 900, margin: 0 }}>🎨 자유 창작 모드</h2>
           <p style={{ fontSize: 12, color: C.mid, margin: 0 }}>
-            {mode === "draw" ? "격자를 눌러 도형을 만들어 보세요!" : "도형을 밀고, 뒤집고, 돌려 보세요!"}
+            {mode === "draw" ? drawDesc : "도형을 밀고, 뒤집고, 돌려 보세요!"}
           </p>
         </div>
       </div>
 
-      {/* Mode toggle */}
-      <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
+      {mode === "draw" && (
+        <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
+          <button onClick={() => { setDrawTool("free"); setVertices([]); }} style={{
+            flex: 1, padding: "8px", fontSize: 13, fontWeight: 700, fontFamily: font,
+            background: drawTool === "free" ? C.sandbox : "#F1F5F9",
+            color: drawTool === "free" ? "#FFF" : C.mid,
+            border: "none", borderRadius: 12, cursor: "pointer",
+          }}>✏️ 자유 그리기</button>
+          <button onClick={() => setDrawTool("polygon")} style={{
+            flex: 1, padding: "8px", fontSize: 13, fontWeight: 700, fontFamily: font,
+            background: drawTool === "polygon" ? C.sandbox : "#F1F5F9",
+            color: drawTool === "polygon" ? "#FFF" : C.mid,
+            border: "none", borderRadius: 12, cursor: "pointer",
+          }}>📐 다각형 그리기</button>
+        </div>
+      )}
+
+      {mode === "draw" && drawTool === "polygon" && vertices.length > 0 && (
+        <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
+          {vertices.length >= 3 && (
+            <button onClick={completePolygon} style={{
+              flex: 1, padding: "8px", fontSize: 13, fontWeight: 700, fontFamily: font,
+              background: `linear-gradient(135deg, ${C.match}, #58D68D)`,
+              color: "#FFF", border: "none", borderRadius: 12, cursor: "pointer",
+            }}>✅ {vertices.length}각형 완성</button>
+          )}
+          <button onClick={() => setVertices([])} style={{
+            padding: "8px 14px", fontSize: 13, fontWeight: 700, fontFamily: font,
+            background: "#FEE2E2", color: "#EF4444",
+            border: "none", borderRadius: 12, cursor: "pointer",
+          }}>✕ 취소</button>
+        </div>
+      )}
+
+      <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
         <button onClick={mode === "draw" ? startOperate : backToDraw} style={{
           flex: 1, padding: "10px", fontSize: 14, fontWeight: 700, fontFamily: font,
           background: mode === "draw"
-            ? (cells.length > 0 ? `linear-gradient(135deg, ${C.sandbox}, ${C.sandbox}CC)` : "#E2E8F0")
+            ? (hasContent ? `linear-gradient(135deg, ${C.sandbox}, ${C.sandbox}CC)` : "#E2E8F0")
             : C.card,
-          color: mode === "draw" ? (cells.length > 0 ? "#FFF" : "#A0AEC0") : C.sandbox,
+          color: mode === "draw" ? (hasContent ? "#FFF" : "#A0AEC0") : C.sandbox,
           border: mode === "draw" ? "none" : `2px solid ${C.sandbox}`,
-          borderRadius: 14, cursor: cells.length > 0 || mode === "operate" ? "pointer" : "not-allowed",
-        }}>
-          {mode === "draw" ? "✅ 도형 완성!" : "✏️ 다시 그리기"}
-        </button>
+          borderRadius: 14, cursor: hasContent || mode === "operate" ? "pointer" : "not-allowed",
+        }}>{mode === "draw" ? "✅ 도형 완성! 조작하기 →" : "✏️ 다시 그리기"}</button>
         <button onClick={clearAll} style={{
           padding: "10px 16px", fontSize: 14, fontWeight: 700, fontFamily: font,
           background: "#FEE2E2", color: "#EF4444",
           border: "none", borderRadius: 14, cursor: "pointer",
-        }}>
-          🗑️
-        </button>
+        }}>🗑️</button>
       </div>
 
-      {/* Grid */}
       <GridView
         playerCells={cells}
         targetCells={mode === "operate" ? ghostCells : []}
         clickable={mode === "draw"}
-        onCellClick={toggleCell}
+        onCellClick={handleCellClick}
+        onCellDrag={handleCellDrag}
+        gridSize={SANDBOX_GRID}
+        cellSize={SANDBOX_CELL}
+        polygons={polygons}
+        ghostPolygons={mode === "operate" ? ghostPolygons : []}
+        currentVertices={mode === "draw" ? vertices : []}
       />
 
-      {/* Ghost legend */}
-      {mode === "operate" && ghostCells.length > 0 && (
-        <div style={{
-          display: "flex", justifyContent: "center", gap: 16, marginTop: 8, fontSize: 12, color: C.mid,
-        }}>
+      {mode === "operate" && (ghostCells.length > 0 || ghostPolygons.length > 0) && (
+        <div style={{ display: "flex", justifyContent: "center", gap: 16, marginTop: 8, fontSize: 12, color: C.mid }}>
           <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
-            <span style={{ display: "inline-block", width: 12, height: 12, borderRadius: 3, background: C.player }} /> 현재
+            <span style={{ display: "inline-block", width: 16, height: 3, background: C.player, borderRadius: 2 }} /> 현재
           </span>
           <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
-            <span style={{ display: "inline-block", width: 12, height: 12, borderRadius: 3, background: C.targetAlpha, border: `1px dashed ${C.targetStroke}` }} /> 처음 위치
+            <span style={{ display: "inline-block", width: 16, height: 3, background: C.targetStroke, borderRadius: 2, borderTop: "2px dashed" }} /> 처음 위치
           </span>
         </div>
       )}
 
-      {/* Operation buttons */}
       {mode === "operate" && (
         <div style={{ marginTop: 12 }}>
           <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4, marginBottom: 8 }}>
@@ -827,27 +1015,16 @@ function SandboxScreen({ onBack }) {
             <OpButton label="상하 뒤집기" icon="↕️" color={C.btnFlip} small onClick={() => applyOp(flipV, "flipV")} />
             <OpButton label="돌리기" icon="🔄" color={C.btnRotate} small onClick={() => applyOp(rotateCW, "rotate")} />
           </div>
-          <div style={{ display: "flex", gap: 6 }}>
-            <OpButton label="되돌리기" icon="↩️" color={C.btnUndo} small onClick={undo} disabled={history.length === 0} />
-          </div>
+          <OpButton label="되돌리기" icon="↩️" color={C.btnUndo} small onClick={undo} disabled={history.length === 0} />
         </div>
       )}
 
-      {/* Operation log */}
       {mode === "operate" && opLog.length > 0 && (
-        <div style={{
-          marginTop: 12, padding: "12px", background: C.card,
-          borderRadius: 14, boxShadow: "0 2px 8px rgba(0,0,0,0.06)",
-        }}>
-          <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 8, color: C.dark }}>
-            조작 기록 ({opLog.length}번)
-          </div>
+        <div style={{ marginTop: 12, padding: "12px", background: C.card, borderRadius: 14, boxShadow: "0 2px 8px rgba(0,0,0,0.06)" }}>
+          <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 8, color: C.dark }}>조작 기록 ({opLog.length}번)</div>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
             {opLog.map((op, i) => (
-              <span key={i} style={{
-                padding: "3px 8px", background: "#F1F5F9",
-                borderRadius: 8, fontSize: 11, color: C.mid,
-              }}>
+              <span key={i} style={{ padding: "3px 8px", background: "#F1F5F9", borderRadius: 8, fontSize: 11, color: C.mid }}>
                 {i + 1}. {OP_LABELS[op]}
               </span>
             ))}
@@ -855,7 +1032,6 @@ function SandboxScreen({ onBack }) {
         </div>
       )}
 
-      {/* Compare slots */}
       {mode === "operate" && (
         <div style={{ marginTop: 12 }}>
           <div style={{ fontSize: 13, fontWeight: 700, color: C.dark, marginBottom: 8 }}>
@@ -867,27 +1043,18 @@ function SandboxScreen({ onBack }) {
               background: compareA ? "#DBEAFE" : "#F1F5F9",
               border: `2px solid ${compareA ? "#3B82F6" : "#E2E8F0"}`,
               borderRadius: 12, cursor: "pointer", color: compareA ? "#3B82F6" : C.mid,
-            }}>
-              {compareA ? `A 저장됨 (${compareA.opLog.length}번)` : "A에 저장"}
-            </button>
+            }}>{compareA ? `A 저장됨 (${compareA.opLog.length}번)` : "A에 저장"}</button>
             <button onClick={() => saveSlot("B")} style={{
               flex: 1, padding: "10px", fontSize: 13, fontWeight: 700, fontFamily: font,
               background: compareB ? "#FEF3C7" : "#F1F5F9",
               border: `2px solid ${compareB ? "#F59E0B" : "#E2E8F0"}`,
               borderRadius: 12, cursor: "pointer", color: compareB ? "#F59E0B" : C.mid,
-            }}>
-              {compareB ? `B 저장됨 (${compareB.opLog.length}번)` : "B에 저장"}
-            </button>
+            }}>{compareB ? `B 저장됨 (${compareB.opLog.length}번)` : "B에 저장"}</button>
           </div>
-
-          {/* Compare view */}
           {compareA && compareB && (
-            <div style={{
-              marginTop: 10, padding: "12px", background: C.card,
-              borderRadius: 14, boxShadow: "0 2px 8px rgba(0,0,0,0.06)",
-            }}>
+            <div style={{ marginTop: 10, padding: "12px", background: C.card, borderRadius: 14, boxShadow: "0 2px 8px rgba(0,0,0,0.06)" }}>
               <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 8, color: C.dark }}>
-                A와 B 비교 — {cellKey(compareA.cells) === cellKey(compareB.cells) ? "✅ 같은 결과!" : "❌ 다른 결과!"}
+                A와 B 비교 — {slotsMatch ? "✅ 같은 결과!" : "❌ 다른 결과!"}
               </div>
               <div style={{ display: "flex", gap: 10 }}>
                 {[compareA, compareB].map((slot, si) => (
@@ -895,9 +1062,7 @@ function SandboxScreen({ onBack }) {
                     <div style={{ fontWeight: 700, marginBottom: 4, color: si === 0 ? "#3B82F6" : "#F59E0B" }}>
                       {si === 0 ? "A" : "B"}
                     </div>
-                    {slot.opLog.map((op, i) => (
-                      <div key={i}>{i + 1}. {OP_LABELS[op]}</div>
-                    ))}
+                    {slot.opLog.map((op, i) => <div key={i}>{i + 1}. {OP_LABELS[op]}</div>)}
                   </div>
                 ))}
               </div>
