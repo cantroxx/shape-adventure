@@ -3,8 +3,8 @@ import { useState, useCallback, useMemo, useEffect, useRef } from "react";
 // ─── Grid & Cell ───
 const GRID = 7;
 const CELL = 62;
-const SANDBOX_GRID = 10;
-const SANDBOX_CELL = 42;
+const SANDBOX_GRID = 16;
+const SANDBOX_CELL = 38;
 
 // ─── Transform helpers ───
 function bbox(cells) {
@@ -978,7 +978,7 @@ function SandboxScreen({ onBack }) {
       : `꼭짓점 ${vertices.length}개 — ${vertices.length >= 3 ? "첫 점 클릭 또는 완성 버튼!" : "계속 찍어주세요"}`;
 
   return (
-    <div style={{ maxWidth: 480, margin: "0 auto", padding: "16px" }}>
+    <div style={{ maxWidth: 650, margin: "0 auto", padding: "16px" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
         <button onClick={onBack} style={{ background: "none", border: "none", fontSize: 22, cursor: "pointer" }}>←</button>
         <div>
