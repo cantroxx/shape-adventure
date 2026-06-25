@@ -2,9 +2,9 @@ import { useState, useCallback, useMemo, useEffect, useRef } from "react";
 
 // ─── Grid & Cell ───
 const GRID = 7;
-const CELL = 50;
+const CELL = 62;
 const SANDBOX_GRID = 10;
-const SANDBOX_CELL = 36;
+const SANDBOX_CELL = 42;
 
 // ─── Transform helpers ───
 function bbox(cells) {
@@ -15,20 +15,37 @@ function center(cells) {
   const b = bbox(cells);
   return { cr: (b.r0 + b.r1) / 2, cc: (b.c0 + b.c1) / 2 };
 }
+function keepInGrid(cells, gridSize = GRID) {
+  const rs = cells.map(c => c[0]), cs = cells.map(c => c[1]);
+  const minR = Math.min(...rs), maxR = Math.max(...rs);
+  const minC = Math.min(...cs), maxC = Math.max(...cs);
+  let dr = 0, dc = 0;
+  if (minR < 0) dr = -minR;
+  else if (maxR >= gridSize) dr = gridSize - 1 - maxR;
+  if (minC < 0) dc = -minC;
+  else if (maxC >= gridSize) dc = gridSize - 1 - maxC;
+  return cells.map(([r, c]) => [r + dr, c + dc]);
+}
 function move(cells, dr, dc) {
   return cells.map(([r, c]) => [r + dr, c + dc]);
 }
-function flipH(cells) {
-  const { cc } = center(cells);
-  return cells.map(([r, c]) => [r, Math.round(2 * cc - c)]);
+function flipH(cells, gridSize = GRID) {
+  const { c0 } = bbox(cells);
+  const flipped = cells.map(([r, c]) => [r, 2 * c0 - c - 1]);
+  return keepInGrid(flipped, gridSize);
 }
-function flipV(cells) {
-  const { cr } = center(cells);
-  return cells.map(([r, c]) => [Math.round(2 * cr - r), c]);
+function flipV(cells, gridSize = GRID) {
+  const { r0 } = bbox(cells);
+  const flipped = cells.map(([r, c]) => [2 * r0 - r - 1, c]);
+  return keepInGrid(flipped, gridSize);
 }
-function rotateCW(cells) {
-  const { cr, cc } = center(cells);
-  return cells.map(([r, c]) => [Math.round(cr + (c - cc)), Math.round(cc - (r - cr))]);
+function rotateCW(cells, gridSize = GRID) {
+  const { r0, c0 } = bbox(cells);
+  const rotated = cells.map(([r, c]) => [
+    r0 + (c - c0),
+    c0 + (r0 - r - 1)
+  ]);
+  return keepInGrid(rotated, gridSize);
 }
 function isValid(cells, blocked = []) {
   const bSet = cellSet(blocked);
@@ -128,7 +145,7 @@ const STAGES = [
     ch: 2, num: 1, title: "좌우로 뒤집어요",
     desc: "L자 도형을 좌우로 뒤집어 보세요!",
     start: [[2,1],[3,1],[4,1],[4,2]],
-    target: [[2,2],[3,2],[4,1],[4,2]],
+    target: [[2,1],[3,1],[4,0],[4,1]],
     blocked: [],
     ops: ["flipH"], stars: [1, 2, 3],
     hint: "좌우 뒤집기 버튼을 눌러 보세요!",
@@ -137,7 +154,7 @@ const STAGES = [
     ch: 2, num: 2, title: "상하로 뒤집어요",
     desc: "T자 도형을 위아래로 뒤집어 보세요!",
     start: [[1,2],[1,3],[1,4],[2,3]],
-    target: [[1,3],[2,2],[2,3],[2,4]],
+    target: [[0,3],[1,2],[1,3],[1,4]],
     blocked: [],
     ops: ["flipV"], stars: [1, 2, 3],
     hint: "상하 뒤집기 버튼을 눌러 보세요!",
@@ -146,17 +163,17 @@ const STAGES = [
     ch: 2, num: 3, title: "뒤집고 옮겨요",
     desc: "Z자 도형을 뒤집고 옮겨서 맞춰 보세요!",
     start: [[2,1],[2,2],[3,2],[3,3]],
-    target: [[2,4],[2,5],[3,3],[3,4]],
+    target: [[2,3],[2,4],[3,2],[3,3]],
     blocked: [],
     ops: ["move", "flipH"], stars: [3, 5, 7],
-    hint: "먼저 좌우로 뒤집은 뒤, 오른쪽으로 밀어요!",
+    hint: "좌우 뒤집기 후 오른쪽으로 2번 밀어 보세요!",
   },
   // ── Chapter 3: 돌리기 ──
   {
     ch: 3, num: 1, title: "막대를 돌려요",
     desc: "세로 막대를 돌려서 가로로 만들어 보세요!",
     start: [[1,3],[2,3],[3,3]],
-    target: [[2,2],[2,3],[2,4]],
+    target: [[1,0],[1,1],[1,2]],
     blocked: [],
     ops: ["rotate"], stars: [1, 2, 3],
     hint: "돌리기 버튼을 한 번 눌러 보세요!",
@@ -165,7 +182,7 @@ const STAGES = [
     ch: 3, num: 2, title: "L자를 돌려요",
     desc: "L자 도형을 90도 돌려 보세요!",
     start: [[1,2],[2,2],[3,2],[3,3]],
-    target: [[2,2],[2,3],[2,4],[3,2]],
+    target: [[1,0],[1,1],[1,2],[2,0]],
     blocked: [],
     ops: ["rotate"], stars: [1, 2, 3],
     hint: "돌리기 버튼을 한 번 눌러 보세요!",
@@ -174,17 +191,17 @@ const STAGES = [
     ch: 3, num: 3, title: "돌리고 옮겨요",
     desc: "L자를 돌린 다음 아래로 옮겨 보세요!",
     start: [[1,1],[2,1],[3,1],[3,2]],
-    target: [[4,1],[4,2],[4,3],[5,1]],
+    target: [[4,0],[4,1],[4,2],[5,0]],
     blocked: [],
-    ops: ["move", "rotate"], stars: [3, 5, 7],
-    hint: "먼저 한 번 돌리고, 아래로 밀어요!",
+    ops: ["move", "rotate"], stars: [4, 6, 8],
+    hint: "먼저 한 번 돌리고, 아래로 3번 밀어요!",
   },
   // ── Chapter 4: 종합 ──
   {
     ch: 4, num: 1, title: "뒤집고 돌려요",
     desc: "T자를 뒤집고 돌려서 맞춰 보세요!",
     start: [[1,2],[1,3],[1,4],[2,3]],
-    target: [[1,3],[2,3],[2,4],[3,3]],
+    target: [[0,0],[1,0],[1,1],[2,0]],
     blocked: [],
     ops: ["flipV", "rotate"], stars: [2, 4, 6],
     hint: "상하 뒤집기 후 돌리기를 해 보세요!",
@@ -193,19 +210,19 @@ const STAGES = [
     ch: 4, num: 2, title: "뒤집고 옮기고!",
     desc: "L자를 뒤집고 오른쪽으로 밀어 보세요!",
     start: [[1,1],[2,1],[3,1],[3,2]],
-    target: [[1,5],[2,5],[3,4],[3,5]],
+    target: [[1,4],[2,4],[3,3],[3,4]],
     blocked: [],
     ops: ["move", "flipH"], stars: [4, 6, 8],
-    hint: "좌우 뒤집기 후 오른쪽으로 밀어요!",
+    hint: "좌우 뒤집기 후 오른쪽으로 3번 밀어요!",
   },
   {
     ch: 4, num: 3, title: "뒤틀이를 물리쳐라!",
     desc: "모든 기술을 사용해 도형을 맞춰 보세요!",
     start: [[1,1],[1,2],[2,1],[3,1],[3,2]],
-    target: [[1,4],[1,5],[2,5],[3,4],[3,5]],
+    target: [[1,3],[1,4],[2,4],[3,3],[3,4]],
     blocked: [],
     ops: ["move", "flipH", "flipV", "rotate"], stars: [4, 6, 9],
-    hint: "좌우 뒤집기 후 오른쪽으로 밀어 보세요!",
+    hint: "좌우 뒤집기 후 오른쪽으로 3번 밀어 보세요!",
   },
   // ── Chapter 5: 장애물 미로 ──
   {
@@ -223,8 +240,8 @@ const STAGES = [
     start: [[1,1],[2,1],[3,1]],
     target: [[3,4],[3,5],[3,6]],
     blocked: [[1,3],[2,3],[4,3],[5,3]],
-    ops: ["move", "rotate"], stars: [6, 8, 10],
-    hint: "먼저 돌려서 가로로 만들고, 아래로 내려간 뒤 틈으로 통과해요!",
+    ops: ["move", "rotate"], stars: [7, 9, 11],
+    hint: "아래로 2번 이동 후 돌리고, 오른쪽으로 4번 밀어 틈으로 통과해요!",
   },
   {
     ch: 5, num: 3, title: "미로를 탈출해!",
@@ -274,12 +291,17 @@ function StarDisplay({ count, size = 24 }) {
   );
 }
 
-function GridView({ playerCells, targetCells = [], blocked = [], matched, onCellClick, onCellDrag, clickable, gridSize = GRID, cellSize = CELL, polygons = [], ghostPolygons = [], currentVertices = [] }) {
+function GridView({
+  playerCells, targetCells = [], blocked = [], matched, onCellClick, onCellDrag, clickable,
+  gridSize = GRID, cellSize = CELL, polygons = [], ghostPolygons = [], currentVertices = [],
+  showFlipHLine = false, showFlipVLine = false, showRotatePivot = false
+}) {
   const gridPx = cellSize * gridSize;
   const pSet = cellSet(playerCells);
   const tSet = cellSet(targetCells);
   const drawRef = useRef({ active: false, mode: null });
   const gridRef = useRef(null);
+  const b = playerCells.length > 0 ? bbox(playerCells) : null;
 
   const getCellFromPos = useCallback((clientX, clientY) => {
     if (!gridRef.current) return null;
@@ -392,8 +414,42 @@ function GridView({ playerCells, targetCells = [], blocked = [], matched, onCell
       })}
 
       {/* SVG polygon overlay */}
-      {(polygons.length > 0 || ghostPolygons.length > 0 || currentVertices.length > 0) && (
+      {(polygons.length > 0 || ghostPolygons.length > 0 || currentVertices.length > 0 || (playerCells.length > 0 && (showFlipHLine || showFlipVLine || showRotatePivot))) && (
         <svg style={{ position: "absolute", top: 0, left: 0, width: cellSize * gridSize, height: cellSize * gridSize, pointerEvents: "none", zIndex: 8 }}>
+          {/* Flip H Axis Line */}
+          {showFlipHLine && b && (
+            <line
+              x1={b.c0 * cellSize} y1={0}
+              x2={b.c0 * cellSize} y2={gridSize * cellSize}
+              stroke={C.btnFlip} strokeWidth="3" strokeDasharray="6,4"
+              opacity="0.8"
+            />
+          )}
+          {/* Flip V Axis Line */}
+          {showFlipVLine && b && (
+            <line
+              x1={0} y1={b.r0 * cellSize}
+              x2={gridSize * cellSize} y2={b.r0 * cellSize}
+              stroke={C.btnFlip} strokeWidth="3" strokeDasharray="6,4"
+              opacity="0.8"
+            />
+          )}
+          {/* Rotation Pivot Point */}
+          {showRotatePivot && b && (
+            <g>
+              <circle
+                cx={b.c0 * cellSize} cy={b.r0 * cellSize}
+                r="7" fill={C.btnRotate} stroke="#FFF" strokeWidth="2"
+                style={{ filter: "drop-shadow(0px 1px 3px rgba(0,0,0,0.3))" }}
+              />
+              <circle
+                cx={b.c0 * cellSize} cy={b.r0 * cellSize}
+                r="12" fill="none" stroke={C.btnRotate} strokeWidth="1.5" strokeDasharray="3,2"
+                className="pulse-anim"
+              />
+            </g>
+          )}
+
           {/* Ghost polygons (original position) */}
           {ghostPolygons.map((poly, pi) => (
             <polygon key={`gp-${pi}`}
@@ -571,7 +627,7 @@ function GameScreen({ stageIdx, cleared, onClear, onBack }) {
 
   const applyOp = useCallback((opFn, opName) => {
     if (matched || replaying) return;
-    const newCells = opFn(cells);
+    const newCells = opFn(cells, GRID);
     if (!isValid(newCells, stage.blocked)) return;
     setHistory(h => [...h, { cells: cells.map(c => [...c]), moves, opLog: [...opLog] }]);
     setCells(newCells);
@@ -676,7 +732,15 @@ function GameScreen({ stageIdx, cleared, onClear, onBack }) {
       </div>
 
       {/* Grid */}
-      <GridView playerCells={cells} targetCells={stage.target} blocked={stage.blocked} matched={matched} />
+      <GridView
+        playerCells={cells}
+        targetCells={stage.target}
+        blocked={stage.blocked}
+        matched={matched}
+        showFlipHLine={stage.ops.includes("flipH")}
+        showFlipVLine={stage.ops.includes("flipV")}
+        showRotatePivot={stage.ops.includes("rotate")}
+      />
 
       {/* Controls */}
       {!replaying && (
@@ -869,8 +933,8 @@ function SandboxScreen({ onBack }) {
   };
 
   const applyOp = (opFn, opName) => {
-    const newCells = cells.length > 0 ? opFn(cells) : [];
-    const newPolygons = polygons.map(p => opFn(p));
+    const newCells = cells.length > 0 ? opFn(cells, SANDBOX_GRID) : [];
+    const newPolygons = polygons.map(p => opFn(p, SANDBOX_GRID));
     const allPts = [...newCells, ...newPolygons.flat()];
     if (!allPts.every(([r, c]) => r >= 0 && r < SANDBOX_GRID && c >= 0 && c < SANDBOX_GRID)) return;
     setHistory(h => [...h, {
@@ -987,6 +1051,9 @@ function SandboxScreen({ onBack }) {
         polygons={polygons}
         ghostPolygons={mode === "operate" ? ghostPolygons : []}
         currentVertices={mode === "draw" ? vertices : []}
+        showFlipHLine={mode === "operate"}
+        showFlipVLine={mode === "operate"}
+        showRotatePivot={mode === "operate"}
       />
 
       {mode === "operate" && (ghostCells.length > 0 || ghostPolygons.length > 0) && (
@@ -1099,6 +1166,15 @@ export default function App() {
         @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;700;900&display=swap');
         * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
         button:active { transform: scale(0.96) !important; }
+        
+        @keyframes pulse-opacity {
+          0% { opacity: 0.4; }
+          50% { opacity: 1.0; }
+          100% { opacity: 0.4; }
+        }
+        .pulse-anim {
+          animation: pulse-opacity 1.5s ease-in-out infinite;
+        }
       `}</style>
 
       {screen === "title" && (
